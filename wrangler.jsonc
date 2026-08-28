@@ -20,7 +20,7 @@
   ],
   "triggers": { "crons": ["17 * * * *"] },
   "vars": {
-    "APP_NAME": "自强持仓",
+    "APP_NAME": "点金雷达",
     "SEC_USER_AGENT": "ZiQiangHoldings/1.0 hans.pan007@gmail.com"
   },
   "observability": { "enabled": true, "head_sampling_rate": 1 }

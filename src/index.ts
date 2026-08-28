@@ -112,7 +112,7 @@ async function feed(env: Env, origin: string, threshold: number) {
     WHERE c.rank=1 ORDER BY c.filed_date DESC LIMIT 30`).bind(threshold / 100).all()).results;
   const escape = (value: unknown) => String(value ?? '').replace(/[<>&'"]/g, (char) => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;' }[char]!));
   const items = rows.map((row) => `<item><title>${escape(row.display_name)}：${escape(row.report_date)} 持仓披露</title><link>${escape(row.source_url)}</link><guid>${escape(row.id)}-${threshold}</guid><pubDate>${new Date(String(row.filed_date)).toUTCString()}</pubDate><description>${row.previous_id ? `新出现 ${escape(row.new_count)} 项；不再披露 ${escape(row.sold_count)} 项；披露股数变化至少 ${threshold}% 的有 ${escape(row.significant_count)} 项。` : '首次记录，已建立变化比较基准。'}</description></item>`).join('');
-  return new Response(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>自强持仓提醒（${threshold}% 阈值）</title><link>${origin}</link><description>知名投资人与机构公开持仓更新</description>${items}</channel></rss>`, { headers: { 'content-type': 'application/rss+xml; charset=utf-8', 'cache-control': 'public, max-age=900' } });
+  return new Response(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>点金雷达提醒（${threshold}% 阈值）</title><link>${origin}</link><description>知名投资人与机构公开持仓更新</description>${items}</channel></rss>`, { headers: { 'content-type': 'application/rss+xml; charset=utf-8', 'cache-control': 'public, max-age=900' } });
 }
 
 async function sources(env: Env) {
@@ -127,9 +127,9 @@ async function sources(env: Env) {
     return [String(record.source), record];
   }));
   return json({ sources: [
-    { id:'sec', name:'SEC EDGAR 13F', cadence:'季度披露', official_url:'https://www.sec.gov/edgar/search/', detail:'逐份读取 13F-HR / 13F-HR/A 原始 XML，保留原始申报链接。', ...(counts.SEC ?? {}) },
-    { id:'ark', name:'ARK Invest 官方持仓', cadence:'交易日更新', official_url:'https://www.ark-funds.com/download-fund-materials', detail:'读取 ARK 六只主动 ETF 官方 CSV。', ...(counts.ARK ?? {}) },
-    { id:'nasdaq', name:'Nasdaq 证券目录', cadence:'每日校准', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'为 CUSIP 持仓补全可可靠匹配的 ticker、板块与行业；未匹配项保持空白。', ...(metadata.results[0] ?? {}) },
+    { id:'sec', name:'美国证监会公开披露系统', cadence:'季度披露', official_url:'https://www.sec.gov/edgar/search/', detail:'逐份读取机构季度持仓原始申报，并保留原始披露链接。', ...(counts.SEC ?? {}) },
+    { id:'ark', name:'木头姐基金官方持仓', cadence:'交易日更新', official_url:'https://www.ark-funds.com/download-fund-materials', detail:'读取六只主动管理基金的官方每日持仓文件。', ...(counts.ARK ?? {}) },
+    { id:'nasdaq', name:'纳斯达克证券目录', cadence:'每日校准', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'为持仓补全可以可靠匹配的交易代码、板块与行业；未匹配项保持空白。', ...(metadata.results[0] ?? {}) },
   ], sync: sync.results[0] ?? null });
 }
 

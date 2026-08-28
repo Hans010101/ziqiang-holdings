@@ -1,6 +1,6 @@
-# 自强持仓
+# 点金雷达
 
-深色数据驾驶舱风格的公开持仓研究平台，以“自强红”为品牌识别，追踪段永平关联 H&H、巴菲特 / Berkshire、木头姐 / ARK、知名主动基金、量化机构和大型金融机构。
+白底红色品牌风格的公开持仓研究平台，追踪段永平关联机构、巴菲特、木头姐、知名主动基金、量化机构和大型金融机构。
 
 线上地址：[ziqiang-holdings.hans-pan007.workers.dev](https://ziqiang-holdings.hans-pan007.workers.dev)
 
