@@ -118,18 +118,22 @@ async function feed(env: Env, origin: string, threshold: number) {
 async function sources(env: Env) {
   const [coverage, metadata, sync] = await env.DB.batch([
     env.DB.prepare(`${latestCte} SELECT m.source,COUNT(*) managers,COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 THEN 1 END) synced,
+      COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 AND l.report_date>=CASE m.source WHEN 'ARK' THEN date('now','-7 days') ELSE date('now','-6 months') END THEN 1 END) current,
+      COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 AND l.report_date<CASE m.source WHEN 'ARK' THEN date('now','-7 days') ELSE date('now','-6 months') END THEN 1 END) stale,
       MAX(m.last_synced_at) updated_at FROM managers m LEFT JOIN latest l ON l.manager_id=m.id AND l.rank=1 GROUP BY m.source`),
-    env.DB.prepare("SELECT COUNT(*) securities,MAX(updated_at) updated_at FROM securities"),
+    env.DB.prepare("SELECT COUNT(*) securities,COUNT(CASE WHEN source LIKE 'SEC+%' THEN 1 END) verified,MAX(updated_at) updated_at FROM securities"),
     env.DB.prepare('SELECT status,started_at,finished_at FROM sync_runs ORDER BY started_at DESC LIMIT 1'),
   ]);
   const counts = Object.fromEntries(coverage.results.map((row) => {
     const record = row as Record<string, unknown>;
     return [String(record.source), record];
   }));
+  const securityCounts = metadata.results[0] as Record<string, unknown> | undefined;
   return json({ sources: [
-    { id:'sec', name:'美国证监会公开披露系统', cadence:'季度披露', official_url:'https://www.sec.gov/edgar/search/', detail:'逐份读取机构季度持仓原始申报，并保留原始披露链接。', ...(counts.SEC ?? {}) },
-    { id:'ark', name:'木头姐基金官方持仓', cadence:'交易日更新', official_url:'https://www.ark-funds.com/download-fund-materials', detail:'读取六只主动管理基金的官方每日持仓文件。', ...(counts.ARK ?? {}) },
-    { id:'nasdaq', name:'纳斯达克证券目录', cadence:'每日校准', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'为持仓补全可以可靠匹配的交易代码、板块与行业；未匹配项保持空白。', ...(metadata.results[0] ?? {}) },
+    { id:'sec', name:'美国证监会 EDGAR 原始申报', cadence:'季度披露', official_url:'https://www.sec.gov/edgar/search/', detail:'持仓、股数、市值与报告期均取自原始 13F，并保留逐份申报链接；同时检查异常金额单位。', ...(counts.SEC ?? {}) },
+    { id:'sec-list', name:'美国证监会 13F 官方证券清单', cadence:'季度校验', official_url:'https://www.sec.gov/rules-regulations/staff-guidance/official-list-section-13f-securities', detail:'按报告季度用官方 CUSIP 清单核验证券身份，阻断同名公司造成的错误代码匹配。', securities:securityCounts?.verified, count_label:'证券身份已核验', updated_at:securityCounts?.updated_at },
+    { id:'ark', name:'木头姐基金官方每日持仓', cadence:'交易日更新', official_url:'https://www.ark-funds.com/download-fund-materials', detail:'直接读取六只主动管理基金官网每日 CSV；已适配更名后的金融科技与太空基金文件。', ...(counts.ARK ?? {}) },
+    { id:'nasdaq', name:'纳斯达克证券目录（辅助）', cadence:'每日补全', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'仅在 SEC 官方 CUSIP 校验或 ARK 官方代码确认后补全交易代码、板块与行业，不参与持仓与变化计算。', ...(securityCounts ?? {}), count_label:'证券元数据已补全' },
   ], sync: sync.results[0] ?? null });
 }
 
@@ -162,9 +166,9 @@ async function api(request: Request, env: Env) {
 export default {
   async fetch(request: Request, env: Env) {
     try { return new URL(request.url).pathname.startsWith('/api/') ? await api(request, env) : env.ASSETS.fetch(request); }
-    catch (cause) { console.error(cause); return error(cause instanceof Error ? cause.message : '服务器错误', 500); }
+    catch (cause) { console.error(JSON.stringify({ event:'request_failed', path:new URL(request.url).pathname, error:cause instanceof Error ? cause.message : String(cause) })); return error(cause instanceof Error ? cause.message : '服务器错误', 500); }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(syncManagers(env));
+    ctx.waitUntil(syncManagers(env).catch((cause) => console.error(JSON.stringify({ event:'scheduled_sync_failed', error:cause instanceof Error ? cause.message : String(cause) }))));
   },
 } satisfies ExportedHandler<Env>;

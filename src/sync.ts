@@ -9,8 +9,8 @@ const ARK_FILES: Record<string, string> = {
   arkg: 'ARK_GENOMIC_REVOLUTION_ETF_ARKG_HOLDINGS.csv',
   arkq: 'ARK_AUTONOMOUS_TECH._%26_ROBOTICS_ETF_ARKQ_HOLDINGS.csv',
   arkw: 'ARK_NEXT_GENERATION_INTERNET_ETF_ARKW_HOLDINGS.csv',
-  arkf: 'ARK_FINTECH_INNOVATION_ETF_ARKF_HOLDINGS.csv',
-  arkx: 'ARK_SPACE_EXPLORATION_%26_INNOVATION_ETF_ARKX_HOLDINGS.csv',
+  arkf: 'ARK_BLOCKCHAIN_%26_FINTECH_INNOVATION_ETF_ARKF_HOLDINGS.csv',
+  arkx: 'ARK_SPACE_%26_DEFENSE_INNOVATION_ETF_ARKX_HOLDINGS.csv',
 };
 
 const jsonInsert = `INSERT OR REPLACE INTO positions
@@ -23,7 +23,7 @@ SELECT json_extract(value,'$.filingId'),json_extract(value,'$.cusip'),json_extra
 
 const securityInsert = `INSERT OR REPLACE INTO securities (cusip,ticker,sector,industry,source,updated_at)
 SELECT json_extract(value,'$.cusip'),json_extract(value,'$.ticker'),json_extract(value,'$.sector'),
-  json_extract(value,'$.industry'),'NASDAQ',datetime('now') FROM json_each(?1)`;
+  json_extract(value,'$.industry'),json_extract(value,'$.source'),datetime('now') FROM json_each(?1)`;
 
 const headers = (env: Env) => ({ 'User-Agent': env.SEC_USER_AGENT, Accept: 'application/json, application/xml, text/xml, text/csv' });
 const xmlTag = (xml: string, name: string) => xml.match(new RegExp(`<(?:\\w+:)?${name}[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?${name}>`, 'i'))?.[1]?.trim() ?? '';
@@ -58,9 +58,28 @@ export function normalizeIssuer(value: string) {
     .replace(/[^A-Z0-9]/g, '');
 }
 
+export function parse13fCusips(text: string) {
+  return new Set(text.split(/\r?\n/).map((line) => line.slice(0, 9).toUpperCase()).filter((cusip) => /^[0-9A-Z]{9}$/.test(cusip)));
+}
+
+export function secValueMultiplier(positions: ParsedPosition[], filedDate: string) {
+  if (filedDate < '2023-01-03') return 1000;
+  const ratios = positions.filter((row) => row.value > 0 && row.shares > 0 && !row.putCall)
+    .map((row) => row.value / row.shares).sort((a, b) => a - b);
+  // ponytail: catches legacy thousand-dollar filings accepted after the 2023 rule change; replace with filer-specific validation if false positives appear.
+  return ratios.length >= 5 && ratios[Math.floor(ratios.length / 2)] < 1 ? 1000 : 1;
+}
+
 async function syncSecurities(env: Env) {
   const fresh = await env.DB.prepare("SELECT 1 ok FROM securities WHERE updated_at>datetime('now','-1 day') LIMIT 1").first();
   if (fresh) return { skipped: true, matched: 0 };
+  const latest = await env.DB.prepare("SELECT MAX(f.report_date) report_date FROM filings f JOIN managers m ON m.id=f.manager_id WHERE m.source='SEC'")
+    .first<{ report_date: string }>();
+  if (!latest?.report_date) throw new Error('No SEC report period available for security validation');
+  const [year, month] = latest.report_date.split('-').map(Number);
+  const quarter = Math.ceil(month / 3);
+  const officialCusips = parse13fCusips(await fetchText(`https://www.sec.gov/files/investment/13flist${year}q${quarter}-txt.txt`, env));
+  if (!officialCusips.size) throw new Error(`Empty SEC 13F security list for ${year} Q${quarter}`);
   const response = await fetch('https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&offset=0&download=true', {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140 Safari/537.36',
@@ -79,10 +98,13 @@ async function syncSecurities(env: Env) {
   }
   const holdings = (await env.DB.prepare('SELECT cusip,MAX(issuer) issuer,MAX(ticker) ticker FROM positions GROUP BY cusip').all<{ cusip: string; issuer: string; ticker: string }>()).results;
   const matched = holdings.flatMap((holding) => {
-    const row = (holding.ticker && byTicker.get(holding.ticker.toUpperCase())) || byName.get(normalizeIssuer(holding.issuer));
-    return row ? [{ cusip: holding.cusip, ticker: row.symbol, sector: row.sector || '', industry: row.industry || '' }] : [];
+    const official = officialCusips.has(holding.cusip.replace(/[^0-9A-Z]/gi, '').slice(0, 9).toUpperCase());
+    const row = (holding.ticker && byTicker.get(holding.ticker.toUpperCase())) || (official && byName.get(normalizeIssuer(holding.issuer)));
+    return row ? [{ cusip: holding.cusip, ticker: row.symbol, sector: row.sector || '', industry: row.industry || '', source: official ? 'SEC+NASDAQ' : 'ARK+NASDAQ' }] : [];
   });
-  for (let i = 0; i < matched.length; i += 250) await env.DB.prepare(securityInsert).bind(JSON.stringify(matched.slice(i, i + 250))).run();
+  const statements = [env.DB.prepare('DELETE FROM securities')];
+  for (let i = 0; i < matched.length; i += 250) statements.push(env.DB.prepare(securityInsert).bind(JSON.stringify(matched.slice(i, i + 250))));
+  await env.DB.batch(statements);
   return { skipped: false, matched: matched.length };
 }
 
@@ -148,8 +170,11 @@ async function syncSec(manager: Manager, env: Env, limit?: number) {
     if (!info) throw new Error(`No information table in ${item.accession}: ${index.directory.item.map((file) => file.name).join(', ')}`);
     const primaryName = item.primary.split('/').at(-1)!;
     let positions = parse13F(await fetchText(`${directory}/${info.name}`, env));
-    // SEC changed Form 13F value units from thousands of dollars to dollars in January 2023.
-    if (item.filedDate < '2023-01-03') positions = positions.map((row) => ({ ...row, value: row.value * 1000 }));
+    const valueMultiplier = secValueMultiplier(positions, item.filedDate);
+    if (valueMultiplier !== 1) {
+      console.warn(JSON.stringify({ event: 'sec_value_unit_corrected', manager: manager.id, accession: item.accession, multiplier: valueMultiplier }));
+      positions = positions.map((row) => ({ ...row, value: row.value * valueMultiplier }));
+    }
 
     if (item.form.endsWith('/A')) {
       const primary = await fetchText(`${directory}/${primaryName}`, env);

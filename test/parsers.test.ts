@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parse13F, parseArk, parseCsv } from '../src/parsers';
-import { aggregatePositions, normalizeIssuer, pickInfoTableFile } from '../src/sync';
+import { aggregatePositions, normalizeIssuer, parse13fCusips, pickInfoTableFile, secValueMultiplier } from '../src/sync';
 
 test('parses namespaced 13F rows and dollar values', () => {
   const rows = parse13F(`<informationTable><ns:infoTable><ns:nameOfIssuer>ACME &amp; CO</ns:nameOfIssuer><ns:titleOfClass>COM</ns:titleOfClass><ns:cusip>123456789</ns:cusip><ns:value>1200456</ns:value><ns:shrsOrPrnAmt><ns:sshPrnamt>7,500</ns:sshPrnamt></ns:shrsOrPrnAmt><ns:votingAuthority><ns:Sole>7500</ns:Sole><ns:Shared>0</ns:Shared><ns:None>0</ns:None></ns:votingAuthority></ns:infoTable></informationTable>`);
@@ -31,4 +31,14 @@ test('aggregates repeated 13F lines for one security without losing shares or va
 test('normalizes filing and market issuer names to the same key', () => {
   assert.equal(normalizeIssuer('APPLE INC'), normalizeIssuer('Apple Inc. Common Stock'));
   assert.equal(normalizeIssuer('COCA COLA CO'), normalizeIssuer('Coca-Cola Company Common Stock'));
+});
+
+test('validates CUSIPs against the SEC fixed-width list', () => {
+  assert.deepEqual([...parse13fCusips('B38564108*CMB.TECH NV\n02079K107 ALPHABET INC\ninvalid\n')], ['B38564108', '02079K107']);
+});
+
+test('corrects legacy thousand-dollar values still used in a current filing', () => {
+  const rows = Array.from({ length: 5 }, (_, i) => ({ cusip: String(i), issuer: 'ACME', title: 'COM', ticker: '', shares: 1000, value: 50, weight: 0, putCall: '', discretion: '', sole: 0, shared: 0, noneVotes: 0 }));
+  assert.equal(secValueMultiplier(rows, '2026-08-14'), 1000);
+  assert.equal(secValueMultiplier(rows.map((row) => ({ ...row, value: 50000 })), '2026-08-14'), 1);
 });
