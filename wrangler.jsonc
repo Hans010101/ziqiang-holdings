@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ziqiang-holdings",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ziqiang-holdings-db",
+      "database_id": "a39a8e38-19bf-43a4-92ca-497ca98c78ad",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "triggers": { "crons": ["17 * * * *"] },
+  "vars": {
+    "APP_NAME": "自强持仓",
+    "SEC_USER_AGENT": "ZiQiangHoldings/1.0 hans.pan007@gmail.com"
+  },
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}

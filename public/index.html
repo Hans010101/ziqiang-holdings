@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="自强持仓：追踪知名投资人、主动基金与大型机构公开披露持仓。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'">
+  <title>自强持仓｜公开持仓研究平台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/" aria-label="自强持仓首页"><span>自强</span>持仓</a>
+    <button class="nav-toggle" aria-label="打开导航" aria-expanded="false">菜单</button>
+    <nav aria-label="主导航">
+      <a href="#/">首页</a><a href="#/managers">机构</a><a href="#/stocks">股票</a><a href="#/compare">对比</a><a href="#/alerts">提醒</a>
+    </nav>
+  </header>
+  <main id="app" tabindex="-1"><div class="loading">正在读取公开披露数据…</div></main>
+  <footer>
+    <strong>自强持仓</strong> · 数据来自 SEC EDGAR 与 ARK Invest 官方披露。13F 具有最长 45 天滞后，且不包含空头、现金及多数境外证券；仅供研究，不构成投资建议。
+  </footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

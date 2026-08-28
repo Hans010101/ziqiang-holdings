@@ -1,0 +1,19 @@
+{
+  "name": "ziqiang-holdings",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test && wrangler deploy --dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsx": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
