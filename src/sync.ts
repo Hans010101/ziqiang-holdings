@@ -2,6 +2,7 @@ import { parse13F, parseArk, type ParsedPosition } from './parsers';
 
 type Manager = { id: string; cik: string | null; source: 'SEC' | 'ARK'; sync_depth: number };
 type RecentFilings = { recent: Record<string, string[]> };
+type MarketRow = { symbol: string; name: string; sector: string; industry: string };
 
 const ARK_FILES: Record<string, string> = {
   arkk: 'ARK_INNOVATION_ETF_ARKK_HOLDINGS.csv',
@@ -19,6 +20,10 @@ SELECT json_extract(value,'$.filingId'),json_extract(value,'$.cusip'),json_extra
   json_extract(value,'$.value'),json_extract(value,'$.weight'),json_extract(value,'$.putCall'),
   json_extract(value,'$.discretion'),json_extract(value,'$.sole'),json_extract(value,'$.shared'),
   json_extract(value,'$.noneVotes') FROM json_each(?1)`;
+
+const securityInsert = `INSERT OR REPLACE INTO securities (cusip,ticker,sector,industry,source,updated_at)
+SELECT json_extract(value,'$.cusip'),json_extract(value,'$.ticker'),json_extract(value,'$.sector'),
+  json_extract(value,'$.industry'),'NASDAQ',datetime('now') FROM json_each(?1)`;
 
 const headers = (env: Env) => ({ 'User-Agent': env.SEC_USER_AGENT, Accept: 'application/json, application/xml, text/xml, text/csv' });
 const xmlTag = (xml: string, name: string) => xml.match(new RegExp(`<(?:\\w+:)?${name}[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?${name}>`, 'i'))?.[1]?.trim() ?? '';
@@ -45,6 +50,40 @@ export function aggregatePositions(positions: ParsedPosition[]) {
     });
   }
   return [...grouped.values()];
+}
+
+export function normalizeIssuer(value: string) {
+  return value.toUpperCase().replace(/&/g, ' AND ').replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(COMMON|STOCK|SHARES?|ORDINARY|CLASS|CL|ADS|ADR|NEW|INCORPORATED|INC|CORPORATION|CORP|COMPANY|CO|HOLDINGS|HLDGS|GROUP|PLC|LLC|LP|LTD|LIMITED|AG|SA|NV|SE)\b/g, ' ')
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+async function syncSecurities(env: Env) {
+  const fresh = await env.DB.prepare("SELECT 1 ok FROM securities WHERE updated_at>datetime('now','-1 day') LIMIT 1").first();
+  if (fresh) return { skipped: true, matched: 0 };
+  const response = await fetch('https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&offset=0&download=true', {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Referer: 'https://www.nasdaq.com/market-activity/stocks/screener',
+    },
+  });
+  if (!response.ok) throw new Error(`NASDAQ metadata ${response.status}`);
+  const market = ((await response.json()) as { data?: { rows?: MarketRow[] } }).data?.rows ?? [];
+  const byTicker = new Map(market.map((row) => [row.symbol.toUpperCase(), row]));
+  const byName = new Map<string, MarketRow | null>();
+  for (const row of market) {
+    const key = normalizeIssuer(row.name);
+    byName.set(key, byName.has(key) ? null : row);
+  }
+  const holdings = (await env.DB.prepare('SELECT cusip,MAX(issuer) issuer,MAX(ticker) ticker FROM positions GROUP BY cusip').all<{ cusip: string; issuer: string; ticker: string }>()).results;
+  const matched = holdings.flatMap((holding) => {
+    const row = (holding.ticker && byTicker.get(holding.ticker.toUpperCase())) || byName.get(normalizeIssuer(holding.issuer));
+    return row ? [{ cusip: holding.cusip, ticker: row.symbol, sector: row.sector || '', industry: row.industry || '' }] : [];
+  });
+  for (let i = 0; i < matched.length; i += 250) await env.DB.prepare(securityInsert).bind(JSON.stringify(matched.slice(i, i + 250))).run();
+  return { skipped: false, matched: matched.length };
 }
 
 async function fetchText(url: string, env: Env) {
@@ -152,6 +191,10 @@ export async function syncManagers(env: Env, managerId?: string, limit?: number)
     } catch (error) {
       results.push({ id: manager.id, error: error instanceof Error ? error.message : String(error) });
     }
+  }
+  if (!managerId) {
+    try { results.push({ id: 'market-metadata', positions: (await syncSecurities(env)).matched }); }
+    catch (error) { results.push({ id: 'market-metadata', error: error instanceof Error ? error.message : String(error) }); }
   }
   const failed = results.filter((row) => row.error).length;
   await env.DB.prepare(`UPDATE sync_runs SET status=?,finished_at=datetime('now'),detail=? WHERE id=?`)

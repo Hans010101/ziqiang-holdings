@@ -37,29 +37,41 @@ async function managerDetail(id: string, env: Env) {
   if (!filings.length) return json({ manager, filings: [], positions: [] });
   const current = filings[0] as Record<string, unknown>;
   const previous = filings.find((filing) => String(filing.report_date) < String(current.report_date)) as Record<string, unknown> | undefined;
-  const rows = await env.DB.prepare(`SELECT c.cusip,c.issuer,c.title,c.ticker,c.shares,c.value,c.weight,c.put_call,
+  const rows = await env.DB.prepare(`SELECT c.cusip,c.issuer,c.title,COALESCE(NULLIF(c.ticker,''),s.ticker,'') ticker,s.sector,s.industry,c.shares,c.value,c.weight,c.put_call,
     p.shares previous_shares,p.value previous_value,
     CASE WHEN p.cusip IS NULL THEN 'new' WHEN c.shares>p.shares THEN 'increase' WHEN c.shares<p.shares THEN 'decrease' ELSE 'unchanged' END change_type
     FROM positions c LEFT JOIN positions p ON p.filing_id=? AND p.cusip=c.cusip AND p.title=c.title AND p.put_call=c.put_call
+    LEFT JOIN securities s ON s.cusip=c.cusip
     WHERE c.filing_id=? ORDER BY c.value DESC`).bind(previous?.id ?? '', current.id).all();
-  const sold = previous ? (await env.DB.prepare(`SELECT p.cusip,p.issuer,p.title,p.ticker,0 shares,0 value,0 weight,p.put_call,p.shares previous_shares,p.value previous_value,'sold' change_type
+  const sold = previous ? (await env.DB.prepare(`SELECT p.cusip,p.issuer,p.title,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,s.sector,s.industry,0 shares,0 value,0 weight,p.put_call,p.shares previous_shares,p.value previous_value,'sold' change_type
     FROM positions p LEFT JOIN positions c ON c.filing_id=? AND c.cusip=p.cusip AND c.title=p.title AND c.put_call=p.put_call
+    LEFT JOIN securities s ON s.cusip=p.cusip
     WHERE p.filing_id=? AND c.cusip IS NULL ORDER BY p.value DESC`).bind(current.id, previous.id).all()).results : [];
   return json({ manager, filings, current, previous: previous ?? null, positions: [...rows.results, ...sold] });
 }
 
 async function stocks(url: URL, env: Env) {
   const q = `%${url.searchParams.get('q')?.trim() ?? ''}%`;
-  const rows = await env.DB.prepare(`${latestCte} SELECT p.cusip,MAX(p.issuer) issuer,MAX(p.ticker) ticker,COUNT(DISTINCT l.manager_id) managers,
+  const sector = url.searchParams.get('sector')?.trim() ?? '';
+  const rows = await env.DB.prepare(`${latestCte} SELECT p.cusip,MAX(p.issuer) issuer,MAX(COALESCE(NULLIF(p.ticker,''),s.ticker,'')) ticker,
+    MAX(COALESCE(s.sector,'')) sector,MAX(COALESCE(s.industry,'')) industry,COUNT(DISTINCT l.manager_id) managers,
     SUM(p.value) total_value,SUM(p.shares) total_shares
-    FROM latest l JOIN positions p ON p.filing_id=l.id WHERE l.rank=1 AND (p.issuer LIKE ? OR p.ticker LIKE ? OR p.cusip LIKE ?)
-    GROUP BY p.cusip ORDER BY managers DESC,total_value DESC LIMIT 200`).bind(q, q, q).all();
+    FROM latest l JOIN positions p ON p.filing_id=l.id LEFT JOIN securities s ON s.cusip=p.cusip
+    WHERE l.rank=1 AND (p.issuer LIKE ? OR p.ticker LIKE ? OR s.ticker LIKE ? OR p.cusip LIKE ?)
+    AND (?='' OR s.sector=? OR s.industry=?) GROUP BY p.cusip ORDER BY managers DESC,total_value DESC LIMIT 200`)
+    .bind(q, q, q, q, sector, sector, sector).all();
+  return json(rows.results);
+}
+
+async function sectors(env: Env) {
+  const rows = await env.DB.prepare(`SELECT sector,COUNT(*) securities FROM securities WHERE sector<>'' GROUP BY sector ORDER BY sector`).all();
   return json(rows.results);
 }
 
 async function stockDetail(cusip: string, env: Env) {
-  const rows = await env.DB.prepare(`${latestCte} SELECT p.*,m.id manager_id,m.display_name,m.category,l.report_date,l.filed_date,l.source_url
-    FROM latest l JOIN positions p ON p.filing_id=l.id JOIN managers m ON m.id=l.manager_id
+  const rows = await env.DB.prepare(`${latestCte} SELECT p.*,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,s.sector,s.industry,
+    m.id manager_id,m.display_name,m.category,l.report_date,l.filed_date,l.source_url
+    FROM latest l JOIN positions p ON p.filing_id=l.id JOIN managers m ON m.id=l.manager_id LEFT JOIN securities s ON s.cusip=p.cusip
     WHERE l.rank=1 AND p.cusip=? ORDER BY p.value DESC`).bind(cusip).all();
   if (!rows.results.length) return error('证券不存在', 404);
   return json({ security: rows.results[0], holders: rows.results });
@@ -70,8 +82,9 @@ async function compare(url: URL, env: Env) {
   if (ids.length < 2) return error('请选择至少两家机构');
   const placeholders = ids.map(() => '?').join(',');
   const rows = await env.DB.prepare(`${latestCte} SELECT m.id,m.display_name,l.report_date,l.total_value,l.positions_count,
-    p.cusip,p.issuer,p.ticker,p.value,p.weight,p.shares FROM latest l JOIN managers m ON m.id=l.manager_id
-    JOIN positions p ON p.filing_id=l.id WHERE l.rank=1 AND m.id IN (${placeholders}) ORDER BY p.value DESC`).bind(...ids).all();
+    p.cusip,p.issuer,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,p.value,p.weight,p.shares FROM latest l JOIN managers m ON m.id=l.manager_id
+    JOIN positions p ON p.filing_id=l.id LEFT JOIN securities s ON s.cusip=p.cusip
+    WHERE l.rank=1 AND m.id IN (${placeholders}) ORDER BY p.value DESC`).bind(...ids).all();
   return json(rows.results);
 }
 
@@ -81,8 +94,9 @@ async function exportCsv(url: URL, env: Env) {
   if (!id) return error('缺少 manager 参数');
   const filing = await env.DB.prepare('SELECT * FROM filings WHERE manager_id=? ORDER BY report_date DESC,filed_date DESC LIMIT 1').bind(id).first<Record<string, unknown>>();
   if (!filing) return error('暂无数据', 404);
-  const rows = (await env.DB.prepare('SELECT * FROM positions WHERE filing_id=? ORDER BY value DESC').bind(filing.id).all()).results;
-  const fields = ['issuer','ticker','cusip','title','shares','value','weight','put_call'];
+  const rows = (await env.DB.prepare(`SELECT p.*,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,s.sector,s.industry
+    FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=? ORDER BY p.value DESC`).bind(filing.id).all()).results;
+  const fields = ['issuer','ticker','cusip','title','sector','industry','shares','value','weight','put_call'];
   const csv = [`机构,报告期,${fields.join(',')}`, ...rows.map((row) => [id, filing.report_date, ...fields.map((field) => (row as Record<string, unknown>)[field])].map(csvCell).join(','))].join('\n');
   return new Response(`\uFEFF${csv}`, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${id}-${filing.report_date}.csv"` } });
 }
@@ -101,6 +115,24 @@ async function feed(env: Env, origin: string, threshold: number) {
   return new Response(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>自强持仓提醒（${threshold}% 阈值）</title><link>${origin}</link><description>知名投资人与机构公开持仓更新</description>${items}</channel></rss>`, { headers: { 'content-type': 'application/rss+xml; charset=utf-8', 'cache-control': 'public, max-age=900' } });
 }
 
+async function sources(env: Env) {
+  const [coverage, metadata, sync] = await env.DB.batch([
+    env.DB.prepare(`${latestCte} SELECT m.source,COUNT(*) managers,COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 THEN 1 END) synced,
+      MAX(m.last_synced_at) updated_at FROM managers m LEFT JOIN latest l ON l.manager_id=m.id AND l.rank=1 GROUP BY m.source`),
+    env.DB.prepare("SELECT COUNT(*) securities,MAX(updated_at) updated_at FROM securities"),
+    env.DB.prepare('SELECT status,started_at,finished_at FROM sync_runs ORDER BY started_at DESC LIMIT 1'),
+  ]);
+  const counts = Object.fromEntries(coverage.results.map((row) => {
+    const record = row as Record<string, unknown>;
+    return [String(record.source), record];
+  }));
+  return json({ sources: [
+    { id:'sec', name:'SEC EDGAR 13F', cadence:'季度披露', official_url:'https://www.sec.gov/edgar/search/', detail:'逐份读取 13F-HR / 13F-HR/A 原始 XML，保留原始申报链接。', ...(counts.SEC ?? {}) },
+    { id:'ark', name:'ARK Invest 官方持仓', cadence:'交易日更新', official_url:'https://www.ark-funds.com/download-fund-materials', detail:'读取 ARK 六只主动 ETF 官方 CSV。', ...(counts.ARK ?? {}) },
+    { id:'nasdaq', name:'Nasdaq 证券目录', cadence:'每日校准', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'为 CUSIP 持仓补全可可靠匹配的 ticker、板块与行业；未匹配项保持空白。', ...(metadata.results[0] ?? {}) },
+  ], sync: sync.results[0] ?? null });
+}
+
 async function safeEqual(a: string, b: string) {
   const [left, right] = await Promise.all([a, b].map((value) => crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))));
   return new Uint8Array(left).every((byte, i) => byte === new Uint8Array(right)[i]);
@@ -113,10 +145,12 @@ async function api(request: Request, env: Env) {
   if (path === '/api/managers') return managers(env);
   if (path.startsWith('/api/managers/')) return managerDetail(decodeURIComponent(path.slice(14)), env);
   if (path === '/api/stocks') return stocks(url, env);
+  if (path === '/api/sectors') return sectors(env);
   if (path.startsWith('/api/stocks/')) return stockDetail(decodeURIComponent(path.slice(12)), env);
   if (path === '/api/compare') return compare(url, env);
   if (path === '/api/export.csv') return exportCsv(url, env);
   if (path === '/api/feed.xml') return feed(env, url.origin, Math.min(100, Math.max(1, Number(url.searchParams.get('threshold')) || 20)));
+  if (path === '/api/sources') return sources(env);
   if (path === '/api/sync' && request.method === 'POST') {
     const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
     if (!env.SYNC_SECRET || !(await safeEqual(token, env.SYNC_SECRET))) return error('未授权', 401);

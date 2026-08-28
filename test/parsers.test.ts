@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parse13F, parseArk, parseCsv } from '../src/parsers';
-import { aggregatePositions, pickInfoTableFile } from '../src/sync';
+import { aggregatePositions, normalizeIssuer, pickInfoTableFile } from '../src/sync';
 
 test('parses namespaced 13F rows and dollar values', () => {
   const rows = parse13F(`<informationTable><ns:infoTable><ns:nameOfIssuer>ACME &amp; CO</ns:nameOfIssuer><ns:titleOfClass>COM</ns:titleOfClass><ns:cusip>123456789</ns:cusip><ns:value>1200456</ns:value><ns:shrsOrPrnAmt><ns:sshPrnamt>7,500</ns:sshPrnamt></ns:shrsOrPrnAmt><ns:votingAuthority><ns:Sole>7500</ns:Sole><ns:Shared>0</ns:Shared><ns:None>0</ns:None></ns:votingAuthority></ns:infoTable></informationTable>`);
@@ -26,4 +26,9 @@ test('aggregates repeated 13F lines for one security without losing shares or va
   const rows = aggregatePositions([{ ...base, shares: 10, value: 100, sole: 10 }, { ...base, shares: 25, value: 300, sole: 25 }]);
   assert.equal(rows.length, 1);
   assert.deepEqual({ shares: rows[0].shares, value: rows[0].value, sole: rows[0].sole }, { shares: 35, value: 400, sole: 35 });
+});
+
+test('normalizes filing and market issuer names to the same key', () => {
+  assert.equal(normalizeIssuer('APPLE INC'), normalizeIssuer('Apple Inc. Common Stock'));
+  assert.equal(normalizeIssuer('COCA COLA CO'), normalizeIssuer('Coca-Cola Company Common Stock'));
 });
