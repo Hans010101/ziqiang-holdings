@@ -12,3 +12,10 @@ test('全部机构都有独立肖像资产且详情页切换回到顶部', () =>
   assert.match(app, /generatedPortraitIds/);
   assert.doesNotMatch(app, /investor-trio/);
 });
+
+test('机构列表整行可访问并展示关键组合摘要', () => {
+  assert.match(app, /<a class="manager-row" href="#\/manager\//);
+  assert.match(app, /前三大持仓/);
+  assert.match(app, /前十集中度/);
+  assert.doesNotMatch(app, /class="row-action"/);
+});

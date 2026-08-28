@@ -23,8 +23,13 @@ async function summary(env: Env) {
 }
 
 async function managers(env: Env) {
-  const rows = await env.DB.prepare(`${latestCte} SELECT m.*,l.report_date,l.filed_date,l.total_value,l.positions_count
-    FROM managers m LEFT JOIN latest l ON l.manager_id=m.id AND l.rank=1 WHERE m.active=1 ORDER BY
+  const rows = await env.DB.prepare(`SELECT m.*,f.report_date,f.filed_date,f.total_value,f.positions_count,
+    (SELECT ROUND(SUM(weight),2) FROM (SELECT weight FROM positions WHERE filing_id=f.id ORDER BY value DESC LIMIT 10)) top10_weight,
+    (SELECT COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1) top_holding_1,
+    (SELECT COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1 OFFSET 1) top_holding_2,
+    (SELECT COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1 OFFSET 2) top_holding_3
+    FROM managers m LEFT JOIN filings f ON f.id=(SELECT id FROM filings WHERE manager_id=m.id ORDER BY report_date DESC,filed_date DESC LIMIT 1)
+    WHERE m.active=1 ORDER BY
     CASE m.category WHEN '知名投资人' THEN 1 WHEN '主动基金' THEN 2 WHEN '大型机构' THEN 3 ELSE 4 END,m.display_name`).all();
   return json(rows.results);
 }
