@@ -27,10 +27,12 @@ const currentRows = (d) => d.positions.filter(x=>x.change_type!=='sold');
 const concentration = (d) => currentRows(d).slice(0,10).reduce((a,x)=>a+Number(x.weight),0);
 const changeRate = (r) => r.previous_shares ? (r.shares-r.previous_shares)/Math.abs(r.previous_shares)*100 : r.change_type==='new' ? 100 : r.change_type==='sold' ? -100 : 0;
 const initials = (name) => name.replace(/\s*\/.*$/,'').slice(0,2).toUpperCase();
+const generatedPortraitIds = new Set(['icahn','scion','himalaya','altimeter','bridgewater','pershing-square','appaloosa','baupost','third-point','soros','greenlight','tiger-global','lone-pine','viking','elliott','citadel','millennium','point72','renaissance','de-shaw','bank-of-america','blackrock','fidelity','goldman-sachs','jpmorgan','morgan-stanley','state-street','t-rowe-price','ubs','vanguard']);
+const institutionPortraitIds = new Set(['bank-of-america','blackrock','fidelity','goldman-sachs','jpmorgan','morgan-stanley','state-street','t-rowe-price','ubs','vanguard']);
 
 function portrait(id,name){
-  const file=id==='hh'?'duan-yongping.png':id==='berkshire'?'warren-buffett.png':id.startsWith('ark')?'cathie-wood.png':'';
-  return file?`<img class="portrait-image" src="/assets/${file}" alt="${esc(name)}人物肖像">`:`<div class="portrait-fallback" aria-hidden="true">${esc(initials(name))}</div>`;
+  const institution=institutionPortraitIds.has(id),file=id==='hh'?'duan-yongping.png':id==='berkshire'?'warren-buffett.png':id.startsWith('ark')?'cathie-wood.png':generatedPortraitIds.has(id)?`${id}.jpg`:'';
+  return file?`<img class="portrait-image${institution?' institution-image':''}" src="/assets/${file}" alt="${esc(name)}${institution?'机构视觉':'人物肖像'}">`:`<div class="portrait-fallback" aria-hidden="true">${esc(initials(name))}</div>`;
 }
 
 function donut(rows){
