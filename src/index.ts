@@ -16,7 +16,6 @@ const currentLatestCte = `${verifiedLatestCte}, current AS (
   SELECT l.* FROM latest l JOIN managers m ON m.id=l.manager_id
   WHERE l.rank=1 AND l.positions_count>0 AND l.report_date>=CASE m.source WHEN 'ARK' THEN date('now','-10 days') ELSE ${secExpectedReport} END
 )`;
-
 async function summary(env: Env) {
   const [stats, latest, sync] = await env.DB.batch([
     env.DB.prepare(`${currentLatestCte} SELECT COUNT(DISTINCT m.id) managers,COUNT(DISTINCT c.manager_id) synced,
@@ -75,6 +74,23 @@ async function managerDetail(id: string, env: Env) {
     LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
     WHERE p.filing_id=? AND c.cusip IS NULL ORDER BY p.value DESC`).bind(current.id, previous.id).all()).results : [];
   return json({ manager, filings, notices: noticesResult.results, current, historical: current, previous: previous ?? null, positions: [...rows.results, ...sold] });
+}
+
+async function disclosures(url: URL, env: Env) {
+  const disclosureSelect = `SELECT d.id,d.market,d.document_type,d.coverage_scope,d.issuer,d.name_cn,d.ticker,d.report_date,d.event_date,d.filed_date,
+    d.source_name,d.source_url,d.source_level,d.validation_status,d.note document_note,r.manager_id,r.holder_name_raw,r.holder_name_cn,
+    r.share_class,r.position_side,r.shares_after,r.percent_after,r.shares_before,r.percent_before,r.event_shares,r.reason_code,
+    r.denominator_scope,r.quantity_basis,r.note row_note,m.display_name,m.category
+    FROM disclosure_documents d JOIN ownership_rows r ON r.document_id=d.id LEFT JOIN managers m ON m.id=r.manager_id`;
+  const market = url.searchParams.get('market')?.trim() ?? '';
+  const manager = url.searchParams.get('manager')?.trim() ?? '';
+  const q = `%${url.searchParams.get('q')?.trim() ?? ''}%`;
+  const rows = await env.DB.prepare(`${disclosureSelect}
+    WHERE (?='' OR d.market=?) AND (?='' OR r.manager_id=?)
+    AND (d.name_cn LIKE ? OR d.issuer LIKE ? OR d.ticker LIKE ? OR r.holder_name_raw LIKE ? OR r.holder_name_cn LIKE ? OR m.display_name LIKE ?)
+    ORDER BY COALESCE(d.event_date,d.report_date) DESC,d.filed_date DESC,d.id,r.position_side LIMIT 500`)
+    .bind(market, market, manager, manager, q, q, q, q, q, q).all();
+  return json(rows.results);
 }
 
 async function stocks(url: URL, env: Env) {
@@ -149,7 +165,7 @@ async function feed(env: Env, origin: string, threshold: number) {
 }
 
 async function sources(env: Env) {
-  const [coverage, validation, notices, metadata, sync] = await env.DB.batch([
+  const [coverage, validation, notices, metadata, disclosureCoverage, sync] = await env.DB.batch([
     env.DB.prepare(`${verifiedLatestCte} SELECT m.source,COUNT(*) managers,COUNT(CASE WHEN l.rank=1 THEN 1 END) synced,
       COUNT(CASE WHEN l.rank=1 AND l.report_date>=CASE m.source WHEN 'ARK' THEN date('now','-10 days') ELSE ${secExpectedReport} END THEN 1 END) current,
       COUNT(CASE WHEN l.rank=1 AND l.report_date<CASE m.source WHEN 'ARK' THEN date('now','-10 days') ELSE ${secExpectedReport} END THEN 1 END) stale,
@@ -158,11 +174,17 @@ async function sources(env: Env) {
       COUNT(CASE WHEN validation_status='reconciled_unit_inferred' THEN 1 END) unit_inferred,MAX(fetched_at) updated_at FROM filings`),
     env.DB.prepare('SELECT COUNT(*) securities,MAX(filed_date) updated_at FROM filing_notices'),
     env.DB.prepare("SELECT COUNT(*) securities,COUNT(CASE WHEN source LIKE 'SEC+%' THEN 1 END) sec_mapped,MAX(updated_at) updated_at FROM securities"),
+    env.DB.prepare(`SELECT d.source_name,COUNT(DISTINCT d.id) documents,COUNT(*) securities,MAX(d.filed_date) updated_at
+      FROM disclosure_documents d JOIN ownership_rows r ON r.document_id=d.id GROUP BY d.source_name`),
     env.DB.prepare('SELECT status,started_at,finished_at FROM sync_runs ORDER BY started_at DESC LIMIT 1'),
   ]);
   const counts = Object.fromEntries(coverage.results.map((row) => {
     const record = row as Record<string, unknown>;
     return [String(record.source), record];
+  }));
+  const disclosureCounts = Object.fromEntries(disclosureCoverage.results.map((row) => {
+    const record = row as Record<string, unknown>;
+    return [String(record.source_name), record];
   }));
   const securityCounts = metadata.results[0] as Record<string, unknown> | undefined;
   return json({ sources: [
@@ -172,9 +194,10 @@ async function sources(env: Env) {
     { id:'sec-list', name:'美国证监会 13F 官方证券清单', cadence:'季度校验', official_url:'https://www.sec.gov/rules-regulations/staff-guidance/official-list-section-13f-securities', detail:'用报告季度官方 CUSIP 清单限定 13F 合格证券；交易代码与行业仍是辅助匹配，不把同名推断写成官方确认。', securities:securityCounts?.sec_mapped, count_label:'只证券完成清单约束与元数据匹配', updated_at:securityCounts?.updated_at },
     { id:'sec-bulk', name:'美国证监会 13F 批量数据集', cadence:'官方延后发布', official_url:'https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets', detail:'作为整季二次核验源；当前季度尚未进入官方批量包时，以逐份 EDGAR 原文与封面对账为准，不伪造“已交叉通过”。', status:'本季度批量包待官方发布' },
     { id:'ark', name:'ARK 基金官方每日持仓', cadence:'交易日更新', official_url:'https://helpcenter.ark-funds.com/where-can-i-download-the-latest-etf-holdings', detail:'直接读取六只主动管理基金官方 CSV，并核对基金代码、单一日期、字段完整性、新鲜度和权重合计；官网日期按其规则还原为持仓日。', ...(counts.ARK ?? {}) },
+    { id:'hkex', name:'香港交易所权益披露', cadence:'法定权益事件', official_url:'https://di.hkex.com.hk/', detail:'逐份核验已接入的大股东权益通知，保留法定主体原名、好仓与淡仓、事件日、披露日及官方编号。它只反映门槛触发的单一证券事件，不是完整组合。', ...(disclosureCounts['香港交易所权益披露'] ?? {}), count_label:'条权益记录已核验' },
+    { id:'cninfo', name:'巨潮资讯上市公司定期报告', cadence:'报告期股东快照', official_url:'https://www.cninfo.com.cn/new/index', detail:'从上市公司法定定期报告读取前十名股东原表，分别标记A股或H股及报告期。它是发行人视角的排名快照，不代表机构完整持仓。', ...(disclosureCounts['巨潮资讯上市公司定期报告'] ?? {}), count_label:'条股东记录已核验' },
     { id:'nasdaq', name:'纳斯达克证券目录（辅助）', cadence:'每日补全', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'仅补全交易代码、板块与行业，不参与持仓、金额、股数和变化计算。', ...(securityCounts ?? {}), count_label:'证券元数据已补全' },
     { id:'sec-other', name:'SEC ADV、N-PORT 与 13D/G', cadence:'独立法律口径', official_url:'https://www.sec.gov/data-research/sec-markets-data', detail:'用于主体身份、基金级持仓或重大权益事件的辅助核对；它们与 13F 的主体、频率和覆盖范围不同，当前不相加、不冒充同一组合。', status:'参考源，不并表' },
-    { id:'hkex-policy', name:'香港交易所权益披露', cadence:'授权边界', official_url:'https://www.hkex.com.hk/global/exchange/terms-of-use?sc_lang=zh-HK', detail:'港股权益披露不是完整组合；因交易所条款限制系统化提取与再发布，当前已停用并撤下自动抓取数据，取得书面授权后再接入。', status:'未获再分发授权，未接入' },
   ], sync: sync.results[0] ?? null });
 }
 
@@ -189,6 +212,7 @@ async function api(request: Request, env: Env) {
   if (path === '/api/summary') return summary(env);
   if (path === '/api/managers') return managers(env);
   if (path.startsWith('/api/managers/')) return managerDetail(decodeURIComponent(path.slice(14)), env);
+  if (path === '/api/disclosures') return disclosures(url, env);
   if (path === '/api/stocks') return stocks(url, env);
   if (path === '/api/sectors') return sectors(env);
   if (path.startsWith('/api/stocks/')) return stockDetail(decodeURIComponent(path.slice(12)), env);

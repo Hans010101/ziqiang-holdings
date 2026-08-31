@@ -6,6 +6,14 @@ const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const worker = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
 const securityNames = readFileSync(new URL('../migrations/0004_chinese_security_names.sql', import.meta.url), 'utf8');
 const verification = readFileSync(new URL('../migrations/0006_filing_verification.sql', import.meta.url), 'utf8');
+const multimarket = readFileSync(new URL('../migrations/0007_multimarket_disclosures.sql', import.meta.url), 'utf8');
+
+function workerFunction(name: string) {
+  const start = worker.indexOf(`async function ${name}(`);
+  assert.notEqual(start, -1, `${name} 函数不存在`);
+  const end = worker.indexOf('\nasync function ', start + 1);
+  return worker.slice(start, end === -1 ? worker.length : end);
+}
 
 test('全部机构都有独立肖像资产且详情页切换回到顶部', () => {
   assert.match(app, /scrollTo\(\{top:0,behavior:'auto'\}\)/);
@@ -32,11 +40,32 @@ test('证券中文常用名统一展示并保留英文申报名', () => {
   assert.match(app, /\$\{esc\(r\.issuer\)\} · \$\{esc\(r\.cusip\)\}/);
 });
 
-test('未获再分发授权的港交所抓取已停用', () => {
-  assert.match(verification, /DELETE FROM regulatory_disclosures/);
-  assert.doesNotMatch(worker, /FROM regulatory_disclosures/);
-  assert.doesNotMatch(app, /其他市场权益披露/);
-  assert.match(`${app}\n${worker}`, /香港交易所[\s\S]{0,160}授权/);
+test('港股与A股披露使用独立文档和权益行模型', () => {
+  assert.match(multimarket, /CREATE TABLE(?: IF NOT EXISTS)? disclosure_documents/i);
+  assert.match(multimarket, /CREATE TABLE(?: IF NOT EXISTS)? ownership_rows/i);
+  assert.match(multimarket, /threshold_interest_event/);
+  assert.match(multimarket, /top10_shareholders/);
+  assert.match(multimarket, /泡泡玛特[\s\S]{0,300}09992|09992[\s\S]{0,300}泡泡玛特/);
+  assert.match(multimarket, /\('CNINFO-[^']+','A股'/);
+  assert.match(multimarket, /https:\/\/(?:[\w-]+\.)?cninfo\.com\.cn\//);
+});
+
+test('多市场披露拥有隔离接口和明确的非组合口径', () => {
+  assert.match(worker, /\bFROM\s+disclosure_documents\b/i);
+  assert.match(worker, /\b(?:FROM|JOIN)\s+ownership_rows\b/i);
+  assert.match(worker, /['"]\/api\/disclosures['"]/);
+  assert.match(app, /港股与A股公开披露/);
+  assert.match(app, /不是完整组合/);
+});
+
+test('组合统计继续只使用申报与持仓表', () => {
+  const portfolioCode = [
+    worker.slice(worker.indexOf('const verifiedLatestCte'), worker.indexOf('async function summary')),
+    ...['summary', 'managers', 'managerDetail', 'stocks', 'stockDetail', 'compare', 'exportCsv', 'feed'].map(workerFunction),
+  ].join('\n');
+  assert.match(portfolioCode, /\bFROM\s+filings\b/i);
+  assert.match(portfolioCode, /\b(?:FROM|JOIN)\s+positions\b/i);
+  assert.doesNotMatch(portfolioCode, /\b(?:FROM|JOIN)\s+(?:disclosure_documents|ownership_rows)\b/i);
 });
 
 test('普通股共识与其他证券类型、原始金额口径分开', () => {
