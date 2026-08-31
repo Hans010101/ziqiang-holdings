@@ -1,4 +1,4 @@
-import { parse13F, parseArk, type ParsedPosition } from './parsers';
+import { parse13F, parseArk, parseHkexDisclosures, type ParsedPosition } from './parsers';
 
 type Manager = { id: string; cik: string | null; source: 'SEC' | 'ARK'; sync_depth: number };
 type RecentFilings = { recent: Record<string, string[]> };
@@ -25,7 +25,7 @@ const securityInsert = `INSERT OR REPLACE INTO securities (cusip,ticker,sector,i
 SELECT json_extract(value,'$.cusip'),json_extract(value,'$.ticker'),json_extract(value,'$.sector'),
   json_extract(value,'$.industry'),json_extract(value,'$.source'),datetime('now') FROM json_each(?1)`;
 
-const headers = (env: Env) => ({ 'User-Agent': env.SEC_USER_AGENT, Accept: 'application/json, application/xml, text/xml, text/csv' });
+const headers = (env: Env) => ({ 'User-Agent': env.SEC_USER_AGENT, Accept: 'application/json, application/xml, text/xml, text/csv, text/html' });
 const xmlTag = (xml: string, name: string) => xml.match(new RegExp(`<(?:\\w+:)?${name}[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?${name}>`, 'i'))?.[1]?.trim() ?? '';
 const isoDate = (value: string) => {
   const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -112,6 +112,21 @@ async function fetchText(url: string, env: Env) {
   const response = await fetch(url, { headers: headers(env) });
   if (!response.ok) throw new Error(`${response.status} ${url}`);
   return response.text();
+}
+
+async function syncHkexDisclosures(env: Env) {
+  const now = new Date(), start = new Date(now); start.setUTCFullYear(start.getUTCFullYear() - 1);
+  const hkDate = (date: Date) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Hong_Kong', day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+  const params = new URLSearchParams({ cid:'0', ed:hkDate(now), g_lang:'zh-HK', lang:'ZH', sa2:'an', sced:hkDate(now), scsd:hkDate(start), sd:hkDate(start), sid:'312028', src:'MAIN' });
+  const rows = parseHkexDisclosures(await fetchText(`https://di.hkex.com.hk/di/NSAllFormList.aspx?${params}`, env), 'H&H International Investment, LLC');
+  if (!rows.length) throw new Error('香港交易所未返回 H&H 的泡泡玛特权益披露');
+  await env.DB.batch(rows.map((row) => env.DB.prepare(`INSERT INTO regulatory_disclosures
+    (id,manager_id,market,issuer,name_cn,ticker,position_type,shares,ownership_percent,involved_shares,reason_code,event_date,filed_date,source_name,source_url,updated_at)
+    VALUES (?,'hh','香港交易所','Pop Mart International Group Ltd.','泡泡玛特','09992',?,?,?,?,?,?,?,'香港交易所权益披露',?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET position_type=excluded.position_type,shares=excluded.shares,ownership_percent=excluded.ownership_percent,
+    involved_shares=excluded.involved_shares,reason_code=excluded.reason_code,event_date=excluded.event_date,filed_date=excluded.filed_date,source_url=excluded.source_url,updated_at=datetime('now')`)
+    .bind(row.id, row.positionType, row.shares, row.ownershipPercent, row.involvedShares, row.reasonCode, row.eventDate, row.filedDate, row.sourceUrl)));
+  return rows.length;
 }
 
 async function saveFiling(env: Env, filing: {
@@ -208,6 +223,10 @@ export async function syncManagers(env: Env, managerId?: string, limit?: number)
     : (await env.DB.prepare(query).all<Manager>()).results;
   if (!managers.length) throw new Error('Manager not found');
   const results: { id: string; positions?: number; error?: string }[] = [];
+  if (!managerId || managerId === 'hh') {
+    try { results.push({ id: 'hkex-disclosures', positions: await syncHkexDisclosures(env) }); }
+    catch (error) { results.push({ id: 'hkex-disclosures', error: error instanceof Error ? error.message : String(error) }); }
+  }
   for (const manager of managers) {
     try {
       const positions = manager.source === 'ARK' ? await syncArk(manager, env) : await syncSec(manager, env, limit);

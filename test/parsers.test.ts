@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parse13F, parseArk, parseCsv } from '../src/parsers';
+import { parse13F, parseArk, parseCsv, parseHkexDisclosures } from '../src/parsers';
 import { aggregatePositions, normalizeIssuer, parse13fCusips, pickInfoTableFile, secValueMultiplier } from '../src/sync';
 
 test('parses namespaced 13F rows and dollar values', () => {
@@ -41,4 +41,9 @@ test('corrects legacy thousand-dollar values still used in a current filing', ()
   const rows = Array.from({ length: 5 }, (_, i) => ({ cusip: String(i), issuer: 'ACME', title: 'COM', ticker: '', shares: 1000, value: 50, weight: 0, putCall: '', discretion: '', sole: 0, shared: 0, noneVotes: 0 }));
   assert.equal(secValueMultiplier(rows, '2026-08-14'), 1000);
   assert.equal(secValueMultiplier(rows.map((row) => ({ ...row, value: 50000 })), '2026-08-14'), 1);
+});
+
+test('parses official HKEX long-position disclosure without calling it a trade', () => {
+  const rows = parseHkexDisclosures(`<table><tr><td><a href="NSForm2.aspx?fn=CS20260812E00001&amp;sid=312028">CS20260812E00001</a></td><td>H&amp;H International Investment, LLC</td><td>11032(L)<br></td><td>28,646,000(L)</td><td>&nbsp;</td><td>102,576,000(L)</td><td>7.70(L)</td><td>06/08/2026</td></tr></table>`, 'H&H International Investment, LLC');
+  assert.deepEqual(rows[0], { id:'CS20260812E00001', positionType:'好仓', shares:102576000, ownershipPercent:7.7, involvedShares:28646000, reasonCode:'11032', eventDate:'2026-08-06', filedDate:'2026-08-12', sourceUrl:'https://di.hkex.com.hk/di/NSForm2.aspx?fn=CS20260812E00001&sid=312028' });
 });

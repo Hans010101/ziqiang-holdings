@@ -16,6 +16,7 @@
 ## 数据源与口径
 
 - [SEC EDGAR](https://www.sec.gov/edgar/sec-api-documentation)：13F-HR / 13F-HR/A 官方 XML
+- [香港交易所权益披露](https://di.hkex.com.hk/di/NSSrchCorp.aspx?src=MAIN&lang=ZH)：港股达到法定门槛后的好仓 / 淡仓事件申报，独立于 13F 展示
 - [ARK Invest](https://www.ark-funds.com/download-fund-materials)：六只主动 ETF 官方日频 CSV
 - [Nasdaq Stock Screener](https://www.nasdaq.com/market-activity/stocks/screener)：补充可靠匹配的 ticker、板块与行业，未匹配项保持空白
 - 增减持按相邻报告期的**披露股数**计算，不按市值变化推断交易

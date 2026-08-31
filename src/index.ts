@@ -37,9 +37,13 @@ async function managers(env: Env) {
 async function managerDetail(id: string, env: Env) {
   const manager = await env.DB.prepare('SELECT * FROM managers WHERE id=?').bind(id).first();
   if (!manager) return error('机构不存在', 404);
-  const filings = (await env.DB.prepare(`SELECT id,report_date,filed_date,form,source_url,total_value,positions_count
-    FROM filings WHERE manager_id=? ORDER BY report_date DESC,filed_date DESC LIMIT 24`).bind(id).all()).results;
-  if (!filings.length) return json({ manager, filings: [], positions: [] });
+  const [filingsResult, disclosuresResult] = await env.DB.batch([
+    env.DB.prepare(`SELECT id,report_date,filed_date,form,source_url,total_value,positions_count
+      FROM filings WHERE manager_id=? ORDER BY report_date DESC,filed_date DESC LIMIT 24`).bind(id),
+    env.DB.prepare(`SELECT * FROM regulatory_disclosures WHERE manager_id=? ORDER BY event_date DESC,filed_date DESC LIMIT 100`).bind(id),
+  ]);
+  const filings = filingsResult.results as Record<string, unknown>[], disclosures = disclosuresResult.results;
+  if (!filings.length) return json({ manager, filings: [], disclosures, positions: [] });
   const current = filings[0] as Record<string, unknown>;
   const previous = filings.find((filing) => String(filing.report_date) < String(current.report_date)) as Record<string, unknown> | undefined;
   const rows = await env.DB.prepare(`SELECT c.cusip,c.issuer,c.title,COALESCE(NULLIF(c.ticker,''),s.ticker,'') ticker,n.name_cn,s.sector,s.industry,c.shares,c.value,c.weight,c.put_call,
@@ -54,7 +58,7 @@ async function managerDetail(id: string, env: Env) {
     LEFT JOIN securities s ON s.cusip=p.cusip
     LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
     WHERE p.filing_id=? AND c.cusip IS NULL ORDER BY p.value DESC`).bind(current.id, previous.id).all()).results : [];
-  return json({ manager, filings, current, previous: previous ?? null, positions: [...rows.results, ...sold] });
+  return json({ manager, filings, disclosures, current, previous: previous ?? null, positions: [...rows.results, ...sold] });
 }
 
 async function stocks(url: URL, env: Env) {
@@ -127,12 +131,13 @@ async function feed(env: Env, origin: string, threshold: number) {
 }
 
 async function sources(env: Env) {
-  const [coverage, metadata, sync] = await env.DB.batch([
+  const [coverage, metadata, disclosures, sync] = await env.DB.batch([
     env.DB.prepare(`${latestCte} SELECT m.source,COUNT(*) managers,COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 THEN 1 END) synced,
       COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 AND l.report_date>=CASE m.source WHEN 'ARK' THEN date('now','-7 days') ELSE date('now','-6 months') END THEN 1 END) current,
       COUNT(CASE WHEN l.rank=1 AND l.positions_count>0 AND l.report_date<CASE m.source WHEN 'ARK' THEN date('now','-7 days') ELSE date('now','-6 months') END THEN 1 END) stale,
       MAX(m.last_synced_at) updated_at FROM managers m LEFT JOIN latest l ON l.manager_id=m.id AND l.rank=1 GROUP BY m.source`),
     env.DB.prepare("SELECT COUNT(*) securities,COUNT(CASE WHEN source LIKE 'SEC+%' THEN 1 END) verified,MAX(updated_at) updated_at FROM securities"),
+    env.DB.prepare('SELECT COUNT(*) securities,MAX(updated_at) updated_at FROM regulatory_disclosures'),
     env.DB.prepare('SELECT status,started_at,finished_at FROM sync_runs ORDER BY started_at DESC LIMIT 1'),
   ]);
   const counts = Object.fromEntries(coverage.results.map((row) => {
@@ -143,6 +148,7 @@ async function sources(env: Env) {
   return json({ sources: [
     { id:'sec', name:'美国证监会 EDGAR 原始申报', cadence:'季度披露', official_url:'https://www.sec.gov/edgar/search/', detail:'持仓、股数、市值与报告期均取自原始 13F，并保留逐份申报链接；同时检查异常金额单位。', ...(counts.SEC ?? {}) },
     { id:'sec-list', name:'美国证监会 13F 官方证券清单', cadence:'季度校验', official_url:'https://www.sec.gov/rules-regulations/staff-guidance/official-list-section-13f-securities', detail:'按报告季度用官方 CUSIP 清单核验证券身份，阻断同名公司造成的错误代码匹配。', securities:securityCounts?.verified, count_label:'证券身份已核验', updated_at:securityCounts?.updated_at },
+    { id:'hkex', name:'香港交易所权益披露', cadence:'事件触发披露', official_url:'https://di.hkex.com.hk/di/NSSrchCorp.aspx?src=MAIN&lang=ZH', detail:'核对达到法定门槛的港股好仓与淡仓；这是权益事件披露，不代表完整港股组合，也不并入 13F 组合权重。', ...(disclosures.results[0] ?? {}), count_label:'官方权益记录' },
     { id:'ark', name:'木头姐基金官方每日持仓', cadence:'交易日更新', official_url:'https://www.ark-funds.com/download-fund-materials', detail:'直接读取六只主动管理基金官网每日 CSV；已适配更名后的金融科技与太空基金文件。', ...(counts.ARK ?? {}) },
     { id:'nasdaq', name:'纳斯达克证券目录（辅助）', cadence:'每日补全', official_url:'https://www.nasdaq.com/market-activity/stocks/screener', detail:'仅在 SEC 官方 CUSIP 校验或 ARK 官方代码确认后补全交易代码、板块与行业，不参与持仓与变化计算。', ...(securityCounts ?? {}), count_label:'证券元数据已补全' },
   ], sync: sync.results[0] ?? null });
