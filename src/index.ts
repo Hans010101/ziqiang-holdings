@@ -25,9 +25,9 @@ async function summary(env: Env) {
 async function managers(env: Env) {
   const rows = await env.DB.prepare(`SELECT m.*,f.report_date,f.filed_date,f.total_value,f.positions_count,
     (SELECT ROUND(SUM(weight),2) FROM (SELECT weight FROM positions WHERE filing_id=f.id ORDER BY value DESC LIMIT 10)) top10_weight,
-    (SELECT COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1) top_holding_1,
-    (SELECT COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1 OFFSET 1) top_holding_2,
-    (SELECT COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1 OFFSET 2) top_holding_3
+    (SELECT COALESCE(n.name_cn,NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip) WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1) top_holding_1,
+    (SELECT COALESCE(n.name_cn,NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip) WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1 OFFSET 1) top_holding_2,
+    (SELECT COALESCE(n.name_cn,NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.issuer) FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip) WHERE p.filing_id=f.id ORDER BY p.value DESC LIMIT 1 OFFSET 2) top_holding_3
     FROM managers m LEFT JOIN filings f ON f.id=(SELECT id FROM filings WHERE manager_id=m.id ORDER BY report_date DESC,filed_date DESC LIMIT 1)
     WHERE m.active=1 ORDER BY
     CASE m.category WHEN '知名投资人' THEN 1 WHEN '主动基金' THEN 2 WHEN '大型机构' THEN 3 ELSE 4 END,m.display_name`).all();
@@ -42,15 +42,17 @@ async function managerDetail(id: string, env: Env) {
   if (!filings.length) return json({ manager, filings: [], positions: [] });
   const current = filings[0] as Record<string, unknown>;
   const previous = filings.find((filing) => String(filing.report_date) < String(current.report_date)) as Record<string, unknown> | undefined;
-  const rows = await env.DB.prepare(`SELECT c.cusip,c.issuer,c.title,COALESCE(NULLIF(c.ticker,''),s.ticker,'') ticker,s.sector,s.industry,c.shares,c.value,c.weight,c.put_call,
+  const rows = await env.DB.prepare(`SELECT c.cusip,c.issuer,c.title,COALESCE(NULLIF(c.ticker,''),s.ticker,'') ticker,n.name_cn,s.sector,s.industry,c.shares,c.value,c.weight,c.put_call,
     p.shares previous_shares,p.value previous_value,
     CASE WHEN p.cusip IS NULL THEN 'new' WHEN c.shares>p.shares THEN 'increase' WHEN c.shares<p.shares THEN 'decrease' ELSE 'unchanged' END change_type
     FROM positions c LEFT JOIN positions p ON p.filing_id=? AND p.cusip=c.cusip AND p.title=c.title AND p.put_call=c.put_call
     LEFT JOIN securities s ON s.cusip=c.cusip
+    LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(c.ticker,''),NULLIF(s.ticker,''),c.cusip)
     WHERE c.filing_id=? ORDER BY c.value DESC`).bind(previous?.id ?? '', current.id).all();
-  const sold = previous ? (await env.DB.prepare(`SELECT p.cusip,p.issuer,p.title,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,s.sector,s.industry,0 shares,0 value,0 weight,p.put_call,p.shares previous_shares,p.value previous_value,'sold' change_type
+  const sold = previous ? (await env.DB.prepare(`SELECT p.cusip,p.issuer,p.title,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,n.name_cn,s.sector,s.industry,0 shares,0 value,0 weight,p.put_call,p.shares previous_shares,p.value previous_value,'sold' change_type
     FROM positions p LEFT JOIN positions c ON c.filing_id=? AND c.cusip=p.cusip AND c.title=p.title AND c.put_call=p.put_call
     LEFT JOIN securities s ON s.cusip=p.cusip
+    LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
     WHERE p.filing_id=? AND c.cusip IS NULL ORDER BY p.value DESC`).bind(current.id, previous.id).all()).results : [];
   return json({ manager, filings, current, previous: previous ?? null, positions: [...rows.results, ...sold] });
 }
@@ -58,13 +60,14 @@ async function managerDetail(id: string, env: Env) {
 async function stocks(url: URL, env: Env) {
   const q = `%${url.searchParams.get('q')?.trim() ?? ''}%`;
   const sector = url.searchParams.get('sector')?.trim() ?? '';
-  const rows = await env.DB.prepare(`${latestCte} SELECT p.cusip,MAX(p.issuer) issuer,MAX(COALESCE(NULLIF(p.ticker,''),s.ticker,'')) ticker,
+  const rows = await env.DB.prepare(`${latestCte} SELECT p.cusip,MAX(p.issuer) issuer,MAX(COALESCE(NULLIF(p.ticker,''),s.ticker,'')) ticker,MAX(COALESCE(n.name_cn,'')) name_cn,
     MAX(COALESCE(s.sector,'')) sector,MAX(COALESCE(s.industry,'')) industry,COUNT(DISTINCT l.manager_id) managers,
     SUM(p.value) total_value,SUM(p.shares) total_shares
     FROM latest l JOIN positions p ON p.filing_id=l.id LEFT JOIN securities s ON s.cusip=p.cusip
-    WHERE l.rank=1 AND (p.issuer LIKE ? OR p.ticker LIKE ? OR s.ticker LIKE ? OR p.cusip LIKE ?)
+    LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
+    WHERE l.rank=1 AND (p.issuer LIKE ? OR p.ticker LIKE ? OR s.ticker LIKE ? OR p.cusip LIKE ? OR n.name_cn LIKE ?)
     AND (?='' OR s.sector=? OR s.industry=?) GROUP BY p.cusip ORDER BY managers DESC,total_value DESC LIMIT 200`)
-    .bind(q, q, q, q, sector, sector, sector).all();
+    .bind(q, q, q, q, q, sector, sector, sector).all();
   return json(rows.results);
 }
 
@@ -74,9 +77,10 @@ async function sectors(env: Env) {
 }
 
 async function stockDetail(cusip: string, env: Env) {
-  const rows = await env.DB.prepare(`${latestCte} SELECT p.*,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,s.sector,s.industry,
+  const rows = await env.DB.prepare(`${latestCte} SELECT p.*,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,n.name_cn,s.sector,s.industry,
     m.id manager_id,m.display_name,m.category,l.report_date,l.filed_date,l.source_url
     FROM latest l JOIN positions p ON p.filing_id=l.id JOIN managers m ON m.id=l.manager_id LEFT JOIN securities s ON s.cusip=p.cusip
+    LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
     WHERE l.rank=1 AND p.cusip=? ORDER BY p.value DESC`).bind(cusip).all();
   if (!rows.results.length) return error('证券不存在', 404);
   return json({ security: rows.results[0], holders: rows.results });
@@ -87,8 +91,9 @@ async function compare(url: URL, env: Env) {
   if (ids.length < 2) return error('请选择至少两家机构');
   const placeholders = ids.map(() => '?').join(',');
   const rows = await env.DB.prepare(`${latestCte} SELECT m.id,m.display_name,l.report_date,l.total_value,l.positions_count,
-    p.cusip,p.issuer,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,p.value,p.weight,p.shares FROM latest l JOIN managers m ON m.id=l.manager_id
+    p.cusip,p.issuer,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,n.name_cn,p.value,p.weight,p.shares FROM latest l JOIN managers m ON m.id=l.manager_id
     JOIN positions p ON p.filing_id=l.id LEFT JOIN securities s ON s.cusip=p.cusip
+    LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
     WHERE l.rank=1 AND m.id IN (${placeholders}) ORDER BY p.value DESC`).bind(...ids).all();
   return json(rows.results);
 }
@@ -99,10 +104,11 @@ async function exportCsv(url: URL, env: Env) {
   if (!id) return error('缺少 manager 参数');
   const filing = await env.DB.prepare('SELECT * FROM filings WHERE manager_id=? ORDER BY report_date DESC,filed_date DESC LIMIT 1').bind(id).first<Record<string, unknown>>();
   if (!filing) return error('暂无数据', 404);
-  const rows = (await env.DB.prepare(`SELECT p.*,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,s.sector,s.industry
-    FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip WHERE p.filing_id=? ORDER BY p.value DESC`).bind(filing.id).all()).results;
-  const fields = ['issuer','ticker','cusip','title','sector','industry','shares','value','weight','put_call'];
-  const csv = [`机构,报告期,${fields.join(',')}`, ...rows.map((row) => [id, filing.report_date, ...fields.map((field) => (row as Record<string, unknown>)[field])].map(csvCell).join(','))].join('\n');
+  const rows = (await env.DB.prepare(`SELECT p.*,COALESCE(NULLIF(p.ticker,''),s.ticker,'') ticker,n.name_cn,s.sector,s.industry
+    FROM positions p LEFT JOIN securities s ON s.cusip=p.cusip LEFT JOIN security_names n ON n.alias=COALESCE(NULLIF(p.ticker,''),NULLIF(s.ticker,''),p.cusip)
+    WHERE p.filing_id=? ORDER BY p.value DESC`).bind(filing.id).all()).results;
+  const fields = ['name_cn','issuer','ticker','cusip','title','sector','industry','shares','value','weight','put_call'];
+  const csv = [`机构,报告期,中文名称,英文申报名,交易代码,证券识别码,证券类别,板块,行业,股数,市值,权重,期权类型`, ...rows.map((row) => [id, filing.report_date, ...fields.map((field) => (row as Record<string, unknown>)[field])].map(csvCell).join(','))].join('\n');
   return new Response(`\uFEFF${csv}`, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${id}-${filing.report_date}.csv"` } });
 }
 

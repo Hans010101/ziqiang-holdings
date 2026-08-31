@@ -306,7 +306,7 @@ main {
 .kpi.negative { border-top: 3px solid var(--red); }
 .cockpit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
 .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--white); box-shadow: 0 12px 34px rgba(48, 31, 27, .045); }
-.cockpit-grid .panel { min-height: 390px; padding: 26px; }
+.cockpit-grid .panel { min-width: 0; min-height: 390px; padding: 26px; }
 .panel-head { display: flex; align-items: start; justify-content: space-between; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .panel-head span { color: var(--muted); font-size: 10px; }
 .panel-head h3 { margin: 3px 0 0; font-size: 20px; }
@@ -636,7 +636,7 @@ footer p { margin: 6px 0 0; }
   .kpi { min-height: 126px; padding: 18px; }
   .kpi strong { font-size: 25px; }
   .cockpit-grid .panel { min-height: 0; padding: 18px; }
-  .donut-wrap { grid-template-columns: 140px 1fr; gap: 9px; padding: 20px 0 0; }
+  .donut-wrap { grid-template-columns: 140px minmax(0,1fr); gap: 9px; padding: 20px 0 0; }
   .movement-row { grid-template-columns: 82px 1fr 56px; gap: 7px; }
   .axis { margin-right: 56px; margin-left: 89px; }
   .manager-row { grid-template-columns: 24px 48px minmax(0,1fr) 18px; gap: 10px; padding: 14px 0; }

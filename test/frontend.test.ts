@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const securityNames = readFileSync(new URL('../migrations/0004_chinese_security_names.sql', import.meta.url), 'utf8');
 
 test('全部机构都有独立肖像资产且详情页切换回到顶部', () => {
   assert.match(app, /scrollTo\(\{top:0,behavior:'auto'\}\)/);
@@ -18,4 +19,13 @@ test('机构列表整行可访问并展示关键组合摘要', () => {
   assert.match(app, /前三大持仓/);
   assert.match(app, /前十集中度/);
   assert.doesNotMatch(app, /class="row-action"/);
+});
+
+test('证券中文常用名统一展示并保留英文申报名', () => {
+  assert.match(securityNames, /CREATE TABLE security_names/);
+  assert.match(securityNames, /\('AAPL','苹果'\)/);
+  assert.match(securityNames, /\('722304102','拼多多'\)/);
+  assert.match(app, /const securityName =/);
+  assert.match(app, /中文名称用于辅助阅读/);
+  assert.match(app, /\$\{esc\(r\.issuer\)\} · \$\{esc\(r\.cusip\)\}/);
 });
