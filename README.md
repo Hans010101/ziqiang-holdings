@@ -15,12 +15,16 @@
 
 ## 数据源与口径
 
-- [SEC EDGAR](https://www.sec.gov/edgar/sec-api-documentation)：13F-HR / 13F-HR/A 官方 XML
-- [香港交易所权益披露](https://di.hkex.com.hk/di/NSSrchCorp.aspx?src=MAIN&lang=ZH)：港股达到法定门槛后的好仓 / 淡仓事件申报，独立于 13F 展示
+- [SEC EDGAR](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)：13F-HR / 13F-HR/A 原始 XML；逐份核对封面申报项数与申报总值，并保留原文、内容哈希和校验状态
+- [SEC 13F-NT](https://www.sec.gov/files/form13f.pdf)：识别由其他主体代为申报的通知，不把旧组合继续标成当前持仓
+- [SEC 13F 官方证券清单](https://www.sec.gov/rules-regulations/staff-guidance/official-list-section-13f-securities)：按报告期辅助核验证券身份
 - [ARK Invest](https://www.ark-funds.com/download-fund-materials)：六只主动 ETF 官方日频 CSV
 - [Nasdaq Stock Screener](https://www.nasdaq.com/market-activity/stocks/screener)：补充可靠匹配的 ticker、板块与行业，未匹配项保持空白
+- 香港交易所自动抓取与再分发已停用；取得书面授权前，港股公开线索不写入官方持仓组合
+- 普通股（SH）、本金金额（PRN）和期权分开存储；机构共识与股票榜单只统计 `SH` 且非期权的普通股多头
 - 增减持按相邻报告期的**披露股数**计算，不按市值变化推断交易
-- 13F 最长滞后 45 天，不包含空头、现金和多数非美国交易证券；公司行动影响无法排除时应理解为“披露持股变化”
+- 13F 最长滞后 45 天，不包含空头、现金和多数非美国交易证券；人物页代表关联申报机构，不等于个人完整资产
+- 公司行动影响无法排除时应理解为“披露持股变化”；异常金额单位保留原始值并明确标记校正，不静默改写
 
 ## 本地开发
 

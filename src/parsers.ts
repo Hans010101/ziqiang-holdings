@@ -4,6 +4,7 @@ export type ParsedPosition = {
   title: string;
   ticker: string;
   shares: number;
+  amountType: string;
   value: number;
   weight: number;
   putCall: string;
@@ -23,16 +24,37 @@ const tag = (xml: string, name: string) => {
 };
 
 const number = (value: string) => Number(value.replace(/[$,%",]/g, '')) || 0;
+const requiredNumber = (value: string, field: string) => {
+  const normalized = value.replace(/[$,%",]/g, '');
+  if (!normalized || !Number.isFinite(Number(normalized))) throw new Error(`Invalid SEC ${field}: ${value || 'missing'}`);
+  return Number(normalized);
+};
+
+export function parse13FCover(xml: string) {
+  return {
+    positionsCount: number(tag(xml, 'tableEntryTotal')),
+    totalValue: number(tag(xml, 'tableValueTotal')),
+  };
+}
+
+export function parse13FNotice(xml: string) {
+  const otherManagers = (xml.match(/<(?:\w+:)?otherManager\b[\s\S]*?<\/(?:\w+:)?otherManager>/gi) ?? []).flatMap((block) => {
+    const cik = tag(block, 'cik'), name = tag(block, 'name');
+    return cik && name ? [{ cik: cik.padStart(10, '0'), name }] : [];
+  });
+  return { otherManagers };
+}
 
 // ponytail: SEC's information-table schema is stable; replace with a streaming XML parser if a filing fails schema validation.
 export function parse13F(xml: string): ParsedPosition[] {
   const blocks = xml.match(/<(?:\w+:)?infoTable\b[\s\S]*?<\/(?:\w+:)?infoTable>/gi) ?? [];
   return blocks.map((block) => ({
     cusip: tag(block, 'cusip'), issuer: tag(block, 'nameOfIssuer'), title: tag(block, 'titleOfClass'), ticker: '',
-    shares: number(tag(block, 'sshPrnamt')), value: number(tag(block, 'value')), weight: 0,
+    shares: requiredNumber(tag(block, 'sshPrnamt'), 'sshPrnamt'), amountType: tag(block, 'sshPrnamtType').toUpperCase(),
+    value: requiredNumber(tag(block, 'value'), 'value'), weight: 0,
     putCall: tag(block, 'putCall'), discretion: tag(block, 'investmentDiscretion'),
     sole: number(tag(block, 'Sole')), shared: number(tag(block, 'Shared')), noneVotes: number(tag(block, 'None')),
-  })).filter((row) => row.cusip && row.issuer);
+  })).filter((row) => row.cusip && row.issuer && (row.amountType === 'SH' || row.amountType === 'PRN'));
 }
 
 export function parseCsv(csv: string): string[][] {
@@ -52,48 +74,22 @@ export function parseCsv(csv: string): string[][] {
   return rows;
 }
 
-export function parseArk(csv: string): { reportDate: string; positions: ParsedPosition[] } {
+export function parseArk(csv: string): { reportDate: string; fund: string; positions: ParsedPosition[] } {
   const [headers = [], ...rows] = parseCsv(csv);
   const index = Object.fromEntries(headers.map((header, i) => [header.trim().toLowerCase(), i]));
-  const positions = rows.map((row) => ({
+  for (const field of ['date','fund','company','ticker','cusip','shares','market value ($)','weight (%)']) {
+    if (index[field] === undefined) throw new Error(`Missing ARK CSV column: ${field}`);
+  }
+  const dataRows = rows.filter((row) => row[index.cusip]?.trim() && row[index.company]?.trim() && row[index.fund]?.trim());
+  const dates = new Set(dataRows.map((row) => row[index.date]?.trim()).filter(Boolean));
+  const funds = new Set(dataRows.map((row) => row[index.fund]?.trim().toUpperCase()).filter(Boolean));
+  if (dates.size !== 1 || funds.size !== 1) throw new Error('ARK CSV mixes dates or funds');
+  const positions = dataRows.map((row) => ({
     cusip: row[index.cusip]?.trim() ?? '', issuer: row[index.company]?.trim() ?? '', title: 'SH',
     ticker: row[index.ticker]?.trim() ?? '', shares: number(row[index.shares] ?? ''),
+    amountType: 'SH',
     value: Math.round(number(row[index['market value ($)']] ?? '')), weight: number(row[index['weight (%)']] ?? ''),
     putCall: '', discretion: '', sole: 0, shared: 0, noneVotes: 0,
   })).filter((row) => row.cusip && row.issuer);
-  return { reportDate: rows[0]?.[index.date]?.trim() ?? '', positions };
-}
-
-export type ParsedDisclosure = {
-  id: string;
-  positionType: '好仓' | '淡仓';
-  shares: number;
-  ownershipPercent: number;
-  involvedShares: number;
-  reasonCode: string;
-  eventDate: string;
-  filedDate: string;
-  sourceUrl: string;
-};
-
-const htmlText = (value: string) => decodeXml(value.replace(/<br\s*\/?\s*>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '));
-const dateIso = (value: string) => value.replace(/^(\d{2})\/(\d{2})\/(\d{4})$/, '$3-$2-$1');
-
-// ponytail: HKEX's disclosure result table is stable; use its export/API if the public HTML schema changes.
-export function parseHkexDisclosures(html: string, holder: string): ParsedDisclosure[] {
-  return (html.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []).flatMap((row) => {
-    const cells = row.match(/<td\b[\s\S]*?<\/td>/gi) ?? [];
-    const [formCell = '', holderCell = '', reasonCell = '', involvedCell = '', , sharesCell = '', percentCell = '', dateCell = ''] = cells;
-    if (cells.length < 8 || htmlText(holderCell) !== holder) return [];
-    const id = htmlText(formCell).match(/CS\d{8}E\d+/)?.[0] ?? '';
-    const marker = htmlText(reasonCell).match(/\(([LS])\)/)?.[1];
-    const amount = (cell: string) => number(htmlText(cell).match(new RegExp(`([\\d,.]+)\\(${marker}\\)`))?.[1] ?? '');
-    const href = formCell.match(/href="([^"]+)"/i)?.[1]?.replace(/&amp;/g, '&') ?? '';
-    if (!id || !marker || !href) return [];
-    return [{
-      id, positionType: marker === 'L' ? '好仓' : '淡仓', involvedShares: amount(involvedCell), shares: amount(sharesCell),
-      ownershipPercent: amount(percentCell), reasonCode: htmlText(reasonCell).match(/\d+/)?.[0] ?? '', eventDate: dateIso(htmlText(dateCell)),
-      filedDate: `${id.slice(2, 6)}-${id.slice(6, 8)}-${id.slice(8, 10)}`, sourceUrl: new URL(href, 'https://di.hkex.com.hk/di/').href,
-    }];
-  });
+  return { reportDate: [...dates][0] ?? '', fund: [...funds][0] ?? '', positions };
 }
