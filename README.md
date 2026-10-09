@@ -2,7 +2,7 @@
 
 白底红色品牌风格的公开持仓研究平台，追踪段永平关联机构、巴菲特、木头姐、知名主动基金、量化机构和大型金融机构。
 
-线上地址：[ziqiang-holdings.hans-pan007.workers.dev](https://ziqiang-holdings.hans-pan007.workers.dev)
+线上地址：[ziqiang-holdings.bitman001.workers.dev](https://ziqiang-holdings.bitman001.workers.dev)
 
 ## 功能
 
@@ -23,6 +23,7 @@
 - [香港交易所权益披露](https://di.hkex.com.hk/)：逐份核验门槛触发的单一港股权益事件，保留法定主体、好仓/淡仓、事件日及官方编号
 - [巨潮资讯](https://www.cninfo.com.cn/new/index)：从上市公司法定定期报告逐份核验 A 股及 H 股前十名股东快照
 - [Nasdaq Stock Screener](https://www.nasdaq.com/market-activity/stocks/screener)：补充可靠匹配的 ticker、板块与行业，未匹配项保持空白
+- SEC 与 ARK 数据由定时任务自动检查；港股和 A 股仅收录逐份核验后入库的官方披露快照
 - 港股权益事件、A 股前十股东快照与 13F 组合独立存储和展示，不并入组合规模、集中度、机构共识或增减仓统计
 - 普通股（SH）、本金金额（PRN）和期权分开存储；机构共识与股票榜单只统计 `SH` 且非期权的普通股多头
 - 增减持按相邻报告期的**披露股数**计算，不按市值变化推断交易
@@ -46,12 +47,13 @@ curl -X POST -H "Authorization: Bearer $SYNC_SECRET" 'http://localhost:8787/api/
 
 ## 验证与部署
 
+发布目标固定为 Cloudflare 账号 `a828bebda1f352216c7d7da425bad17a`，须使用该账号的 Wrangler 登录或专用 API Token。
+
 ```bash
 npm run check
+npx wrangler d1 migrations apply ziqiang-holdings-db --remote
 npm run deploy
 ```
-
-线上 D1 迁移：`npx wrangler d1 migrations apply ziqiang-holdings-db --remote`。
 
 ## 技术栈
 

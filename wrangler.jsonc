@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ziqiang-holdings",
+  "account_id": "a828bebda1f352216c7d7da425bad17a",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
   "compatibility_flags": ["nodejs_compat"],
@@ -14,14 +15,14 @@
     {
       "binding": "DB",
       "database_name": "ziqiang-holdings-db",
-      "database_id": "a39a8e38-19bf-43a4-92ca-497ca98c78ad",
+      "database_id": "cba3bce5-ee5a-4178-a5e3-822ae7e1d792",
       "migrations_dir": "./migrations"
     }
   ],
   "triggers": { "crons": ["17 * * * *"] },
   "vars": {
     "APP_NAME": "点金雷达",
-    "SEC_USER_AGENT": "ZiQiangHoldings/1.0 hans.pan007@gmail.com"
+    "SEC_USER_AGENT": "ZiQiangHoldings/1.0 hans.pan002@gmail.com"
   },
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }

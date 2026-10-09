@@ -99,6 +99,7 @@ async function syncSecurities(env: Env) {
   const officialCusips = parse13fCusips(await fetchText(`https://www.sec.gov/files/investment/13flist${year}q${quarter}-txt.txt`, env));
   if (!officialCusips.size) throw new Error(`Empty SEC 13F security list for ${year} Q${quarter}`);
   const response = await fetch('https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&offset=0&download=true', {
+    signal: AbortSignal.timeout(15_000),
     headers: {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140 Safari/537.36',
       Accept: 'application/json, text/plain, */*',
@@ -127,7 +128,7 @@ async function syncSecurities(env: Env) {
 }
 
 async function fetchText(url: string, env: Env) {
-  const response = await fetch(url, { headers: headers(env) });
+  const response = await fetch(url, { headers: headers(env), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`${response.status} ${url}`);
   return response.text();
 }
