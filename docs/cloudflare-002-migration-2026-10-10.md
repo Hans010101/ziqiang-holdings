@@ -26,7 +26,7 @@
 - 007 Worker 保留为 thin bridge，Cron 为空；007 D1 保留且未删除、清空或覆盖。
 - 目标 D1 中迁移前遗留的 6 条孤立 `running` 记录仍保留；最新状态与公开页面不受影响，本次只读验收未清理历史记录。
 - GitHub 仓库为公开仓库，发布配置中的账号、D1、入口和 SEC 联系身份均已固定到 002，不存在回退到 007 的仓库依赖；仓库目前没有 GitHub Actions 工作流或专用 Cloudflare Secret。
-- 当前机器的 Wrangler `default` profile 仍登录 007，且没有 002 profile；因此从这个终端再次手动发布前，必须切换到 002 OAuth 或提供 002 专用 Token。显式的 002 `account_id` 会使错误账号授权直接失败，不会把新版本误发到 007。
+- 当前机器的 Wrangler `default` profile 已切换为原有 002 OAuth；`wrangler whoami` 只读复核显示账号 `a828bebda1f352216c7d7da425bad17a`，具备 Workers Scripts 与 D1 写权限。007 OAuth 只保存在受限迁移目录的独立备份中，迁移工具的 source/target 凭据指向也已分离；不得自行登录、刷新或覆盖这些共享凭据。
 
 ## 删除 007 前的独立性增量验收
 
@@ -50,7 +50,7 @@
 ### 真正需要在删除 007 前处理的事项
 
 - 旧 `hans-pan007.workers.dev` 地址目前只是指向 002 的兼容桥。删除 007 不影响 002，但会让仍保存旧书签或订阅旧 RSS 地址的用户断链；应先统一迁移到 <https://ziqiang-holdings.bitman001.workers.dev>，更稳妥的长期方案是先绑定自有域名。
-- 当前终端的 Wrangler 仍只登录 007，GitHub 仓库也没有 Actions、部署 Secret 或其他 CI/CD。线上运行不受影响，但以后人工发布前必须改用 002 OAuth 或 002 专用 API Token；错误的 007 凭据会因显式 002 `account_id` 而失败，不会误发到 007。
+- 当前终端默认 Wrangler 已是 002，人工发布的账号错配阻塞已经解除；仓库仍显式固定 002 `account_id` 与 D1 ID。GitHub 仓库目前没有 Actions、部署 Secret 或其他 CI/CD，因此推送本身不会自动发布，后续发布仍需在 002 凭据上下文中主动执行。
 - 仓库迁移本身只负责表结构和 38 家机构种子数据，但受限迁移目录已经保存了 002 的切换时点全量备份：`full-ziqiang-holdings-db-target-cutover.sql`（91,640,347 字节）、`full-ziqiang-holdings-db-target-cutover.sqlite`（72,122,368 字节）和独立校验清单。2026-10-10 再次以只读方式核验 SQLite，`integrity_check` 为 `ok`、外键错误为 0，包含 38 家机构、391 份申报、289,178 条持仓、4,059 条证券元数据、12 份港/A 股文件和 25 条权益记录；因此 007 D1 不是唯一备份，也不构成灾备依赖。
 - 该备份截至切换时点，包含 1,105 条 `sync_runs`；002 线上当前为 1,116 条，后续新增的是定时运行记录和抓取时间更新，最近观察期没有新增上游持仓披露。尚未确认存在每日自动备份；正式删除 007 前若要把恢复点推进到当下，可再做一次 002 全量导出并在临时 SQLite 中还原校验，但这不是 002 独立运行的前置条件。
 - 迁移前仍有 6 条长期 `running` 历史记录；它们不影响最新状态，但后续应增加超时收敛和“最近成功超过两小时”告警，避免监控歧义。
